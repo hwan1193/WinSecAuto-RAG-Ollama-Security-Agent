@@ -1,0 +1,100 @@
+Linux 환경에서 Ollama와 FAISS를 활용한 로컬 RAG 파이프라인 구축 및 의존성 지옥 디버깅 (트러블 슈팅과정)
+
+본 문서는 사내 가상화 리눅스 서버 환경(vm-int-se***-***)에서 오픈소스 LLM(LaMA 3) 기반의 로컬 RAG (검색 증강 생성) 무인 인프라를 구축하는 과정에서 발생한 시스템/라이브러리 레벨의 의존성 에러 (Dependency Hell)와 이를 우회하고 해결한 실전 아키텍처 리빌딩 과정을 기록합니다.
+
+1. 초기 아키텍처 및 목표
+- 목표: 사내 보안 가이드라인(Guidelines.txt)을 로컬 LLM에 실시간 주입하여 문서를 참조해 답변하는 보안 자동화 봇 구축.
+
+- 초기 스택: LangChain (Framework) + Ollama/LLaMA 3 (LLM) + ChromaDB (Vector DB) + OllamaEmbeddings (Embedding API)
+
+2. 장애 전황 및 단계별 디버깅 로그 분석 (4대 예외 상황 해결)
+
+[Issue 1] FileNotFoundError (데이터셋 파싱 실패)
+
+- 발생 로그: FileNotFoundError: [Erroro 2] No such file or directory: '.\Guidelines.txt'
+
+- 원인 분석: 파일 시스템에 파이썬 뇌 (Guidelines.py)는 컴파일되었으나, 소스 텍스트 파일명이 꼬여 (대소문자 오타 또는 경로 불일치) 외부 문서 로더 (TextLoader)가 파일 시스템에서 Null 포인터 예외를 발생시킴.
+
+조치 사항: 리눅스 터미널 명령어로 텍스트 데이터셋 경로와 파일명을 ./Guidelines.txt 로 완벽하게 매핑 및 강제 생성 조치.
+===========================================================================
+echo "우리 회사 보안 규정 중 패스워드 변경 주기는 90일 마다 주기적으로 변경해야 하며..."
+===========================================================================
+[Issue 2] ModuleNotFoundError: NO module named 'chromadb'
+
+- 발생 로그: ImportError: Could not import chromadb python package.
+
+- 원인 분석: RAG 파이프라인의 벡터 임시 기억 저장소 역할을 수행할 chromadb 패키지가 파이썬 백엔드 환경에 주입되지 않음.
+
+- 조치 사항: pip install chromadb 프로토콜 가동하여 외부 라이브러리 수동 주입.
+
+[Issue 3] RuntimeError: Your system has an unsupported version of sqlite3 (OS 커널 제약)
+
+- 발생 로그: RuntimeError: Your system has an unsupported version of sqlite3. Chroma requires sqlite3 >= 3.35.0.
+
+- 원인 분석: 가상화 리눅스 (RHEL/CentOS 계열 등) 내부의 기본 내장 sqlite3 바이너리 버전이 낮아 고스펙 C++ 기반인 ChromaDB가 이니셜라이즈 단계에서 연산을 거부함. OS 커널 레벨의 sqlite3 소스 컴파일은 다른 인프라에 노이즈를 주므로 아키텍처 스위칭이 필요함.
+
+- 조치 사항: SQLite3 종속성이 전혀 없으며, 메모리 상에서 Meta (Facebook) 알고리즘으로 초고속 인덱싱을 수행하는 경량 Vector DB인 FAISS 체제로 스위칭 결정.
+
+==========================================================================
+pip install faiss-cpu
+==========================================================================
+
+[Issue 4] ValueError: This server does not support embeddings (Ollama 인프라 제어 차단)
+
+- 발생 로그: ValueError: Error raised by inference API HTTP code: 500, {"error":"This server does not support embeddings. Start it with --embeddings"}
+
+원인 분석: FAISS로 전환했으나, 기존 OllamaEmbeddings 코드가 로컬 Ollama 백엔드 서버에 임베팅 벡터 생성을 요청함. 그러나 현재 Ollama 서버 엔진 설정에 --embeddings 파라미터 락 (Lock)이 걸려 있어 HTTP 500 내부 서버 에러 인터럽트가 발생함.
+
+- 조치 사항: Ollama 서버 설정을 원격 변경하기 힘든 환경임을 감안, 임베딩 연산 모듈을 Ollama 서버로 부터 완전히 독립시킴.
+HuggingFace의 글로벌 표준 경량 임베딩 모델 (all-MiniLM-L6-v2)을 파이썬 내부로 다운로드해 독립 연산하도록 소스코드 전면 개편.
+
+============================================================================
+pip install sentence-transformers langchain-huggingface
+============================================================================
+
+3. 최종 무결성 아키텍처 및 소스코드 (Final Solution)
+
+Ollama 서버의 제약과 OS의 SQLite3 버전 제약을 모두 우회하고 완벽하게 구동에 성공한 하이브리드 RAG 파이프라인 소스코드입니다.
+
+============================================================================
+from langchain_community.llms import Ollama
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.chains import RetrievalQA
+
+# 1. Ollama 추론 엔진 독립 바인딩 (LLaMA 3)
+llm = Ollama(model="llama3")
+
+# 2. Ollama 임베딩 서버 에러 우회용 HuggingFace 로컬 경량 임베딩 모델 로드
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# 3. 사내 보안 가이드라인 문서 로드
+loader = TextLoader("./Guidelines.txt", encoding="utf-8")
+documents = loader.load()
+
+# 4. SQLite3 제약이 없는 FAISS 인메모리 DB에 문서 임베딩 벡터 저장
+vector_store = FAISS.from_documents(documents, embeddings)
+
+# 5. RAG(검색 증강 생성) 컨텍스트 매핑 체인 구성
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=vector_store.as_retriever()
+)
+
+# 6. 인하우스 보안 지침 검증 질의 격발
+question = "우리 회사 보안 규정 중 패스워드 변경 주기는 어떻게 돼?"
+response = qa_chain.run(question)
+
+print(f"\n[+] 사령관님, FAISS RAG 연산 결과 보고드립니다:\n{response}")
+============================================================================
+
+4. 연산 성공 로그 (Execution Result)
+
+[root@vm-int-sec***-***-*** ~]# python3 Guidelines.py
+
+[+] 사령관님, FAISS RAG 연산 결과 보고드립니다.
+우리 회사의 패스워드 변경 주기는 90일입니다.
+
+- 결론 : 시스템 레벨의 다양한 제약 (구형 OS 데이터베이스 버전, 서버 API 옵션제한) 상황 속에서, 인프라를 억지로 수정하지 않고 엔지니어링 아키텍처 스위칭 (ChromaDB > FAISS / OllamaEmbedding > HuggingFace로 이중 우회)을 통해 최소한의 리소스로 고가용성 로컬 RAG 파이프라인을 안착 시킴.
