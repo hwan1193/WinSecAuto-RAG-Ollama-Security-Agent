@@ -97,3 +97,6 @@ HTML/PDF 보안 리포트 자동 생성
 현재 상태: Local LLM 실행 환경 구축 및 보안 로그 요약 PoC 단계
 
 본 프로젝트는 WinSecAuto V2.1의 RAG 및 Local LLM 확장 검증을 위한 PoC입니다.
+
+<img width="1672" height="941" alt="WinSecAuto V2 1 멀티 LLM 보안 운영 아키텍처_20260623" src="https://github.com/user-attachments/assets/d553f874-d064-4652-b99a-00d477ebd16a" />
+
