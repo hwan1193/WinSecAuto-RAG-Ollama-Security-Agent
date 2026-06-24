@@ -1,0 +1,94 @@
+아키텍처 안에서는 이 역할입니다.
+
+1. 데이터 흐름 제어
+- WinSecAuto 점검 결과
+- Get-VulnFeed 결과
+- 자산 인벤토리
+- 과거 리포트
+- 예외 승인 이력
+- 정책 문서
+
+2. RAG 호출 제어
+- 관련 정책 검색
+- ATT&CK 매핑 근거 검색
+- CVE/KEV/KISA 근거 검색
+- 과거 조치 이력 검색
+
+3. LLM 라우팅
+- Low/Info: 룰 기반 + RAG 요약
+- Medium: Ollama 또는 단일 LLM
+- High/P1/P2: 외부 LLM 검증
+- 불확실 항목: Multi-LLM Cross Check
+
+4. Tool 호출 통제
+- Defender API
+- Intune Graph API
+- Log Analytics
+- GitHub/SBOM
+- Report Generator
+- Teams/티켓 연동
+
+5. 결과 통합
+- 위험도 산정
+- 조치 권고 생성
+- 담당자별 Action Item 생성
+- HTML/PDF/CSV 리포트 생성
+
+========================================================================
+
+현재 아키텍처 기준:
+
+[Data Sources]
+Defender, Intune, Entra, Sysmon, WinSecAuto, Get-VulnFeed, Asset Inventory
+
+↓
+[Collection & Normalization]
+JSON 정규화, Finding 생성, CVE Feed 정규화, Asset-CVE 매칭
+
+↓
+[RAG / Security Knowledge Base]
+정책, ATT&CK, CVE, KISA, 과거 리포트, 예외 이력, 조치 플레이북
+
+↓
+[AI Agent Orchestration Layer]
+LangChain / LangGraph
+LLM Router, Tool Router, Agent Workflow, Memory, Guardrails
+
+↓
+[LLM Layer]
+Ollama Local LLM, OpenAI, Claude, Gemini
+
+↓
+[Safety Gate]
+Prompt Injection 방어, Tool Allowlist, Human Approval, Audit Log
+
+↓
+[Reporting & Action]
+PDF, HTML, CSV, Teams, SharePoint, Sentinel Workbook, Intune/Defender Action
+
+※ 핵심은 LangChain/LangGraph가 LLM 자체가 아니라 “흐름을 조율하는 계층"
+
+AI Agent Orchestration Layer
+LangChain / LangGraph
+
+- LLM Router
+- RAG Retriever
+- Tool Router
+- Agent Workflow
+- Context Builder
+- Memory / History
+- Guardrails
+- Evidence Binder
+
+위험도와 불확실성에 따라 Local LLM, 외부 LLM, Multi-LLM 검증 여부를 선택하고, RAG 검색 결과와 보안 도구 호출 결과를 통합하여 최종 분석과 리포트를 생성하는 계층
+
+==========================================================================
+
+포트폴리오 설명문:
+
+AI Agent Orchestration Layer는 LangChain 또는 LangGraph 기반으로 구성할 수 있으며, WinSecAuto 점검 결과, 외부 취약점 인텔리전스, 자산 인벤토리, RAG 검색 결과를 하나의 분석 흐름으로 연결하는 역할을 수행합니다. 해당 계층은 LLM Router, RAG Retriever, Tool Router, Context Builder, Evidence Binder로 구성되며, 위험도와 불확실성에 따라 Ollama Local LLM, OpenAI, Claude, Gemini 등 분석 모델을 선택적으로 호출합니다.
+
+사용기술 추가:
+
+LangChain, LangGraph, AI Agent Orchestration, LLM Router, Tool Router, RAG Retriever, Context Builder, Evidence Binder, Guardrails, Agent Workflow
+
