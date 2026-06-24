@@ -1,0 +1,123 @@
+Local LLM RAG 프로젝트 실전 구축 및 트러블슈팅 전체 가이드
+
+본 문서는 vm-int-sec***-***-*** 환경에서 소형 및 대형 Local LLM 인프라를 구축하고, 다중 보안 지침 문서를 통합하여 동적 RAG 라우팅 시스템을 완성하기 까지의 전체 명령어 수행 기록 및 장애 조치 (Troubleshooting) 가이드입니다.
+
+1. 인프라 디렉토리 구조화 및 파일 배치
+
+엔터프라이즈 규격에 맞게 프로젝트 폴더를 세분화하고 기존 소스코드를 이관(Migration)합니다.
+
+# 1. 프로젝트 폴더 생성
+mkdir -p /root/WinSecAuto-RAG-Ollama-Security-Agent/scripts
+mkdir -p /root/WinSecAuto-RAG-Ollama-Security-Agent/docs
+mkdir -p /root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data
+
+# 2. 기존 단일 파일들을 신규 아키텍처 폴더로 이주
+mv /root/Guidelines.py /root/WinSecAuto-RAG-Ollama-Security-Agent/scripts/Guidelines.py
+mv /root/Guidelines.txt /root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data/Guidelines_sample.txt
+
+# 3. 의존성 및 환경변수 정의 파일 생성
+vi /root/WinSecAuto-RAG-Ollama-Security-Agent/requirements.txt
+vi /root/WinSecAuto-RAG-Ollama-Security-Agent/2.env.example
+vi /root/WinSecAuto-RAG-Ollama-Security-Agent/docs/test-results.md
+
+2. 실전 트러블슈팅 히스토리 (장애 및 조치 로그)
+
+case 1. 상대 경로 유실로 인한 파일 로드 에러 (FileNotFoundError)
+
+- 상황: 스크립트 이관 후 최초 격발 시 발생
+
+[root@vm-int-sec***-***-*** scripts]# python3 Guidelines.py
+FileNotFoundError: [Errno 2] No such file or directory: './Guidelines.txt'
+RuntimeError: Error loading ./Guidelines.txt
+
+- 원인: 실행 스크립트가 scripts/ 내부로 이동되면서 기존 소스코드에 하드코딩되어 있던 상대 경로 (.\Guidelines.txt)의 참조 Lock이 깨짐.
+
+- 조치 내용: Guidelines.py 소스코드 내부의 파일 로더 경로를 리눅스 시스템의 무결한 절대 경로로 변경하여 가동 위치에 상관없이 동작하도록 고정함.
+
+loader = TextLoader("/root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data/Guidelines_sample.txt", encoding="utf-8")
+
+case 2. 다중 가이드라인 데이터셋 수립 및 구문 오류 (SyntaxError)
+
+# 계정 및 패스워드 운영 지침 수립
+cat << 'EOF' > /root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data/Guidelines_Account.txt
+[사내 임직원 계정 및 패스워드 관리 지침]
+1. 패스워드 변경 주기: 모든 임직원은 최초 로그인 후 최소 90일마다 비밀번호를 변경해야 한다.
+...
+EOF
+
+# 네트워크 보안 및 접근 통제 지침 수립
+cat << 'EOF' > /root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data/Guidelines_Network.txt
+...
+EOF
+
+# 정보자산 분류 및 AI 이용 규정 수립
+cat << 'EOF' > /root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data/Guidelines_Asset.txt
+...
+EOF
+
+- 상황: 다중 파일 인덱싱을 위해 소스코드를 변경하는 과정에서 에러 격발
+
+[root@vm-int-sec***-***-*** scripts]# python3 Guidelines.py
+  File "/root/WinSecAuto-RAG-Ollama-Security-Agent/scripts/Guidelines.py", line 19
+    sample_data 폴더 내의 모든 txt 파일을 읽어 들이는 디렉토리 로더 프로토콜 가동
+                    ^
+SyntaxError: invalid syntax
+
+- 원인: 파이썬 스크립트 내부 가이드 주석 추가 시 주석 기호(#) 포맷 누락으로 인터프리터 구문 에러
+
+- 조치 내용: 라인 상단에 #를 명시하여 구문 오류 해결.
+
+case 3. DirectoryLoader 기본 모듈의 의존성 누수 (ImportError)
+
+- 상황: 다중 텍스트 인덱싱 모듈 격발 시 발생
+
+[root@vm-int-sec***-***-*** scripts]# python3 Guidelines.py
+ModuleNotFoundError: No module named 'unstructured'
+ImportError: unstructured package not found, please install it with `pip install unstructured`
+
+- 원인: LangChain의 DirectoryLoader는 명시적 선언이 없을 경우 백엔드에서 무겁고 거대한 unstructured 파싱 라이브러리를 강제 로드하려고 시도함. GPU 가속이 없는 가상화 리눅스 인프라 자원을 보호하기에는 부적합한 패키지임..
+
+- 조치 내용: 외부 무거운 모듈의 추가 설치를 완전히 배제하고 이미 내장된 경량 TextLoader를 인라인 매개변수로 강제 바인딩하여 아키텍처 경량화 유지함.
+
+loader = DirectoryLoader("/root/WinSecAuto-RAG-Ollama-Security-Agent/sample_data", glob="*.txt", loader_cls=TextLoader, loader_kwargs={'encoding': 'utf-8'})
+
+case 4. 경량 모델(Gemma:2b)의 컨텍스트 드랍 및 출력 제어 실패 (최대 난제..)
+
+- 상황: unstructured 우회 후 구동에는 성공했으나 프롬프트 지시 거부 및 컨텍스트 누수 발생..
+
+[인프라 라우터 로깅] 분류 결과: SECURITY (원문: SECURITY)
+결과 리포트 1: The passage does not specify how the password change period is determined... (답변 회피)
+
+[인프라 라우터 로깅] 분류 결과: SECURITY (원문: GENERAL. The question is about the weather, not security.)
+결과 리포트 2: The context does not provide any information... (일상 대화 오탐)
+
+- 원인 분석: 1. DirectoryLoader가 다중 텍스트 스트림을 청크로 분할하는 과정에서 자원 제약으로 인해 FAISS 벡터 DB에 컨텍스트 누수가 발생하여 모델이 정보를 인지하지 못함.
+2.20억 파라미터급 경량 모델 (Gemma:2b)의 생태적 한계로 인해 "단 한 단어로만 출력하라"는 시스템 프롬프트를 무시하고 부연설명 (The question is about the weather, not security.)을 출력에 포함시킴. 이로 인해 소스코드 내부 키워드 검증 로직(if "SECURITY" in raw_decision)에 일반 대화마저 보안 큐로 강제 인입되는 트래픽 분기 메커니즘 붕괴 현상 확인.
+
+- 최종 조치 내용 (인프라 및 모델 전면 재조정)
+
+1. 불안정한 DirectoryLoader를 완전히 폐기하고, 파이썬 내장 open 기능을 이용해 sample_data/ 내의 모든 텍스트 파일을 하나의 스트림으로 병합 직렬화하여 TextLoader로 던지는 안정적인 파이프라인으로 전면 개편.
+
+2. 추론 능력이 확실한 대형 모델 LLaMA3 체제로 백엔드를 전면 원복함.
+
+3. LLM의 불규칙한 출력 변수를 방어하기 위해 파이썬 문자열의 맨 앞단만 검증하는 startswith() 정밀 필터링 레이어를 소스코드에 결합하여 완벽한 방화벽 구축.
+
+3. 최종 무결성 검증 완료 로그
+
+[root@vm-int-sec***-***-*** scripts]# python3 Guidelines.py
+
+[⚙️ 인프라 라우터 로깅] 분류 결과: SECURITY (원문: SECURITY)
+[🔒 보안 관제 라인] 중요 보안 지침 탐지 - LLaMA3 메인 RAG 파이프라인 가동.
+결과 리포트 1:
+According to the context, our company's security regulations state that the password change cycle is 90 days.
+
+--------------------------------------------------
+
+[⚙️ 인프라 라우터 로깅] 분류 결과: GENERAL (원문: GENERAL)
+[💬 일반 통신 라인] 단순 질의 탐지 - LLaMA3 인라인 즉시 응답.
+결과 리포트 2:
+😊 안녕하세요! 반가워요! 😊 indeed, the weather today is really lovely isn't it? 🌞 How are you enjoying it? 👀
+
+[결론]
+보안 질의 시 병합 데이터셋으로 부터 "90일(90 days)" 핵심 데이터를 오차 없이 추출하며, 일상 대화 인입 시 정확하게 RAG를 우회(Bypass)하여 일반 통신 라인으로 동적 스위칭하는 데 성공함.
+ 
